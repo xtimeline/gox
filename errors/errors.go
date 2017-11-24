@@ -27,7 +27,6 @@ func GetCode(err error) int {
 	return CodeUnknownError
 }
 
-
 type E struct {
 	id      int64
 	code    int
