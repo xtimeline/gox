@@ -12,13 +12,21 @@ const (
 
 func New(code int, message string, detail map[string]interface{}) error {
 	return E{
-		id:      time.Now().UnixNano(),
+		id:      time.Now().UnixNano(), // TODO: use snowflake?
 		code:    code,
 		message: message,
 		detail:  detail,
 		logged:  new(bool),
 	}
 }
+
+func GetCode(err error) int {
+	if x, ok := err.(E); ok {
+		return x.Code()
+	}
+	return CodeUnknownError
+}
+
 
 type E struct {
 	id      int64
