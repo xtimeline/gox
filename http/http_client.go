@@ -3,7 +3,6 @@ package http
 import (
 	"compress/gzip"
 	"crypto/tls"
-	"encoding/json"
 	"io"
 	"io/ioutil"
 	"net"
@@ -12,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	. "github.com/xtimeline/gox/json"
+	"github.com/xtimeline/gox/json"
 )
 
 type HttpClient struct {
@@ -46,9 +45,7 @@ func (r *HttpResponse) readJson(out interface{}) error {
 	} else {
 		bodyReader = r.Body
 	}
-	decoder := json.NewDecoder(bodyReader)
-	decoder.UseNumber()
-	if err := decoder.Decode(out); err != nil {
+	if err := json.NewDecoder(bodyReader).Decode(out); err != nil {
 		return err
 	}
 	return nil
@@ -64,14 +61,14 @@ func (r *HttpResponse) ReadBytes() ([]byte, error) {
 	return data, err
 }
 
-func (r *HttpResponse) ReadJsons() ([]JsonMap, error) {
-	items := []JsonMap{}
+func (r *HttpResponse) ReadJsons() ([]json.Map, error) {
+	items := []json.Map{}
 	err := r.readJson(&items)
 	return items, err
 }
 
-func (r *HttpResponse) ReadJson() (JsonMap, error) {
-	jsonMap := JsonMap{}
+func (r *HttpResponse) ReadJson() (json.Map, error) {
+	jsonMap := json.Map{}
 	err := r.readJson(&jsonMap)
 	return jsonMap, err
 }
@@ -204,16 +201,16 @@ func (r *HttpRequest) Delete(url string) (*HttpResponse, error) {
 	return r.doRawRequest(request)
 }
 
-func (r *HttpRequest) PutJson(url string, data JsonMap) (*HttpResponse, error) {
-	body, err := json.Marshal(data)
+func (r *HttpRequest) PutJson(url string, data json.Map) (*HttpResponse, error) {
+	body, err := data.Marshal()
 	if err != nil {
 		return nil, err
 	}
 	return r.SetHeader("Content-Type", "application/json").Put(url, body)
 }
 
-func (r *HttpRequest) PostJson(url string, data JsonMap) (*HttpResponse, error) {
-	body, err := json.Marshal(data)
+func (r *HttpRequest) PostJson(url string, data json.Map) (*HttpResponse, error) {
+	body, err := data.Marshal()
 	if err != nil {
 		return nil, err
 	}

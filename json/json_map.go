@@ -1,4 +1,4 @@
-package jsonmap
+package json
 
 import (
 	"encoding/json"
@@ -13,24 +13,28 @@ var (
 	ErrConvertFail = errors.New("convert fail")
 )
 
-type JsonMap map[string]interface{}
+type Map map[string]interface{}
 
-func (m JsonMap) Marshal() ([]byte, error) {
+func (m Map) Marshal() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-func (m JsonMap) MustMarshal() []byte {
+func (m Map) MustMarshal() []byte {
 	data, _ := json.Marshal(m)
 	return data
 }
 
-func (m JsonMap) Decode(reader io.Reader) error {
+func (m Map) Unmarshal(data []byte) error {
+	return json.Unmarshal(data, m)
+}
+
+func (m Map) Decode(reader io.Reader) error {
 	decoder := json.NewDecoder(reader)
 	decoder.UseNumber()
 	return decoder.Decode(&m)
 }
 
-func (m JsonMap) ItemCount(k string) (int, error) {
+func (m Map) ItemCount(k string) (int, error) {
 	if v, has := m[k]; has {
 		if items, ok := v.([]interface{}); ok {
 			return len(items), nil
@@ -41,7 +45,7 @@ func (m JsonMap) ItemCount(k string) (int, error) {
 	return 0, ErrKeyInvalid
 }
 
-func (m JsonMap) StringItem(k string, index int64) (string, error) {
+func (m Map) StringItem(k string, index int64) (string, error) {
 	if v, has := m[k]; has {
 		if items, ok := v.([]interface{}); ok {
 			if s, ok := items[index].(string); ok {
@@ -53,10 +57,10 @@ func (m JsonMap) StringItem(k string, index int64) (string, error) {
 	return "", ErrKeyInvalid
 }
 
-func (m JsonMap) Json(k string) (JsonMap, error) {
+func (m Map) Json(k string) (Map, error) {
 	if v, has := m[k]; has {
 		if m, ok := v.(map[string]interface{}); ok {
-			return JsonMap(m), nil
+			return Map(m), nil
 		} else {
 			return nil, ErrConvertFail
 		}
@@ -64,11 +68,11 @@ func (m JsonMap) Json(k string) (JsonMap, error) {
 	return nil, ErrKeyInvalid
 }
 
-func (m JsonMap) MustJson(k string) JsonMap {
-	return JsonMap(m[k].(map[string]interface{}))
+func (m Map) MustJson(k string) Map {
+	return Map(m[k].(map[string]interface{}))
 }
 
-func (m JsonMap) Int64(k string) (int64, error) {
+func (m Map) Int64(k string) (int64, error) {
 	if v, has := m[k]; has {
 		if num, ok := v.(json.Number); ok {
 			return num.Int64()
@@ -79,7 +83,7 @@ func (m JsonMap) Int64(k string) (int64, error) {
 	return 0, ErrKeyInvalid
 }
 
-func (m JsonMap) MustInt64(k string) int64 {
+func (m Map) MustInt64(k string) int64 {
 	i, err := m[k].(json.Number).Int64()
 	if err != nil {
 		panic(err)
@@ -87,7 +91,7 @@ func (m JsonMap) MustInt64(k string) int64 {
 	return i
 }
 
-func (m JsonMap) MustParseString(k string) string {
+func (m Map) MustParseString(k string) string {
 	if v, has := m[k]; has {
 		if s, ok := v.(string); ok {
 			return s
@@ -104,7 +108,7 @@ func (m JsonMap) MustParseString(k string) string {
 	panic(-1)
 }
 
-func (m JsonMap) String(k string) (string, error) {
+func (m Map) String(k string) (string, error) {
 	if v, has := m[k]; has {
 		if s, ok := v.(string); ok {
 			return s, nil
@@ -115,6 +119,6 @@ func (m JsonMap) String(k string) (string, error) {
 	return "", ErrKeyInvalid
 }
 
-func (m JsonMap) MustString(k string) string {
+func (m Map) MustString(k string) string {
 	return m[k].(string)
 }
