@@ -14,8 +14,14 @@ import (
 	"github.com/xtimeline/gox/json"
 )
 
+// https://github.com/sony/gobreaker
+type HttpBreaker interface {
+	Execute(func() (interface{}, error)) (interface{}, error)
+}
+
 type HttpClient struct {
-	raw *http.Client
+	raw     *http.Client
+	breaker HttpBreaker
 }
 
 type HttpValues struct {
@@ -53,7 +59,6 @@ func (r *HttpResponse) readJson(out interface{}) error {
 
 func (r *HttpResponse) ReadBytes() ([]byte, error) {
 	defer r.Body.Close()
-
 	data, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		return nil, err
@@ -77,7 +82,7 @@ func (r *HttpResponse) ReadObject(o interface{}) error {
 	return r.readJson(o)
 }
 
-func NewHttpClient() *HttpClient {
+func NewHttpClient(breaker HttpBreaker) *HttpClient {
 	cfg := &tls.Config{
 		InsecureSkipVerify: false,
 	}
@@ -96,7 +101,8 @@ func NewHttpClient() *HttpClient {
 		Timeout:   30 * time.Second,
 	}
 	wrapper := &HttpClient{
-		raw: client,
+		raw:     client,
+		breaker: breaker,
 	}
 	return wrapper
 }
@@ -160,45 +166,51 @@ func (r *HttpRequest) doRawRequest(request *http.Request) (*HttpResponse, error)
 	return &HttpResponse{response}, nil
 }
 
-func (r *HttpRequest) Post(url string, data []byte) (*HttpResponse, error) {
-	request, err := r.newRawRequest("POST", url, data)
+func (r *HttpRequest) doRequest(method, url string, data []byte, query *HttpValues) (*HttpResponse, error) {
+	fn := func() (interface{}, error) {
+		request, err := r.newRawRequest(method, url, data)
+		if err != nil {
+			return nil, err
+		}
+		if query != nil {
+			request.URL.RawQuery = query.Encode()
+		}
+		return r.doRawRequest(request)
+	}
+
+	if r.httpClient.breaker != nil {
+		response, err := r.httpClient.breaker.Execute(fn)
+		if err != nil {
+			return nil, err
+		}
+		return response.(*HttpResponse), err
+	}
+
+	response, err := fn()
 	if err != nil {
 		return nil, err
 	}
-	return r.doRawRequest(request)
+	return response.(*HttpResponse), err
+}
+
+func (r *HttpRequest) Post(url string, data []byte) (*HttpResponse, error) {
+	return r.doRequest("POST", url, data, nil)
 }
 
 func (r *HttpRequest) Put(url string, data []byte) (*HttpResponse, error) {
-	request, err := r.newRawRequest("PUT", url, data)
-	if err != nil {
-		return nil, err
-	}
-	return r.doRawRequest(request)
+	return r.doRequest("PUT", url, data, nil)
 }
 
 func (r *HttpRequest) Get(url string) (*HttpResponse, error) {
-	request, err := r.newRawRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	return r.doRawRequest(request)
+	return r.doRequest("GET", url, nil, nil)
 }
 
 func (r *HttpRequest) Query(url string, query HttpValues) (*HttpResponse, error) {
-	request, err := r.newRawRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.URL.RawQuery = query.Encode()
-	return r.doRawRequest(request)
+	return r.doRequest("GET", url, nil, &query)
 }
 
 func (r *HttpRequest) Delete(url string) (*HttpResponse, error) {
-	request, err := r.newRawRequest("DELETE", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	return r.doRawRequest(request)
+	return r.doRequest("DELETE", url, nil, nil)
 }
 
 func (r *HttpRequest) PutJson(url string, data json.Map) (*HttpResponse, error) {
