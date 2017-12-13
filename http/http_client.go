@@ -21,7 +21,7 @@ var (
 
 // https://github.com/sony/gobreaker
 type HttpBreaker interface {
-	Execute(func() (interface{}, error)) (interface{}, error)
+	Allow() (done func(success bool), err error)
 }
 
 type HttpValues struct {
@@ -222,7 +222,7 @@ func (r *HttpRequest) doRawRequest(request *http.Request) (*HttpResponse, error)
 }
 
 func (r *HttpRequest) DoRequest(method, url string, data []byte, query *HttpValues) (*HttpResponse, error) {
-	fn := func() (interface{}, error) {
+	fn := func() (*HttpResponse, error) {
 		request, err := r.newRawRequest(method, url, data)
 		if err != nil {
 			return nil, err
@@ -239,18 +239,20 @@ func (r *HttpRequest) DoRequest(method, url string, data []byte, query *HttpValu
 	}
 
 	if r.httpClient.cfg.breaker != nil {
-		response, err := r.httpClient.cfg.breaker.Execute(fn)
+		done, err := r.httpClient.cfg.breaker.Allow()
 		if err != nil {
 			return nil, err
 		}
-		return response.(*HttpResponse), err
+		response, err := fn()
+		done(err == nil && response.StatusCode < http.StatusInternalServerError)
+		return response, err
 	}
 
 	response, err := fn()
 	if err != nil {
 		return nil, err
 	}
-	return response.(*HttpResponse), err
+	return response, err
 }
 
 func (r *HttpRequest) Post(url string, data []byte) (*HttpResponse, error) {
