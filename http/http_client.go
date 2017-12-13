@@ -2,7 +2,8 @@ package http
 
 import (
 	"compress/gzip"
-	"crypto/tls"
+	"context"
+	"errors"
 	"io"
 	"io/ioutil"
 	"net"
@@ -14,14 +15,13 @@ import (
 	"github.com/xtimeline/gox/json"
 )
 
+var (
+	ErrRequestTimeOut = errors.New("request time out")
+)
+
 // https://github.com/sony/gobreaker
 type HttpBreaker interface {
 	Execute(func() (interface{}, error)) (interface{}, error)
-}
-
-type HttpClient struct {
-	raw     *http.Client
-	breaker HttpBreaker
 }
 
 type HttpValues struct {
@@ -82,35 +82,66 @@ func (r *HttpResponse) ReadObject(o interface{}) error {
 	return r.readJson(o)
 }
 
-func NewHttpClient(breaker HttpBreaker) *HttpClient {
-	cfg := &tls.Config{
-		InsecureSkipVerify: false,
-	}
+type HttpClientConfig struct {
+	breaker        HttpBreaker
+	disbaleTimeout bool
+}
+
+type HttpClient struct {
+	raw       *http.Client
+	transport *http.Transport
+	cfg       HttpClientConfig
+}
+
+func NewHttpClient(cfg HttpClientConfig) *HttpClient {
 	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
+		Timeout:   3 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
 	transport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
 		Dial:                dialer.Dial,
 		TLSHandshakeTimeout: 10 * time.Second,
 		MaxIdleConnsPerHost: 150,
-		TLSClientConfig:     cfg,
 	}
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   30 * time.Second,
 	}
 	wrapper := &HttpClient{
-		raw:     client,
-		breaker: breaker,
+		raw:       client,
+		transport: transport,
+		cfg:       cfg,
 	}
 	return wrapper
+}
+
+func NewDefaultHttpClient() *HttpClient {
+	return NewHttpClient(HttpClientConfig{})
 }
 
 func (c *HttpClient) NewRequest() *HttpRequest {
 	httpRequest := &HttpRequest{
 		httpClient: c,
 		httpHeader: make(http.Header),
+		timeout:    2 * time.Second,
+	}
+	return httpRequest
+}
+
+func (c *HttpClient) NewRequestWithoutTimeout() *HttpRequest {
+	httpRequest := &HttpRequest{
+		httpClient: c,
+		httpHeader: make(http.Header),
+		timeout:    0,
+	}
+	return httpRequest
+}
+
+func (c *HttpClient) NewRequestWithTimeout(timeout time.Duration) *HttpRequest {
+	httpRequest := &HttpRequest{
+		httpClient: c,
+		httpHeader: make(http.Header),
+		timeout:    timeout,
 	}
 	return httpRequest
 }
@@ -118,6 +149,7 @@ func (c *HttpClient) NewRequest() *HttpRequest {
 type HttpRequest struct {
 	httpClient *HttpClient
 	httpHeader http.Header
+	timeout    time.Duration
 }
 
 func (r *HttpRequest) AddHeader(key, value string) *HttpRequest {
@@ -158,6 +190,29 @@ func (r *HttpRequest) newRawRequest(method string, url string, data []byte) (*ht
 	return request, nil
 }
 
+func (r *HttpRequest) doRawRequestWithTimeout(request *http.Request, ctx context.Context) (*HttpResponse, error) {
+	type Pack struct {
+		response *http.Response
+		err      error
+	}
+	c := make(chan Pack, 1)
+	go func() {
+		response, err := r.httpClient.raw.Do(request)
+		c <- Pack{response: response, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		r.httpClient.transport.CancelRequest(request)
+		<-c
+		return nil, ErrRequestTimeOut
+	case result := <-c:
+		if result.err != nil {
+			return nil, result.err
+		}
+		return &HttpResponse{result.response}, nil
+	}
+}
+
 func (r *HttpRequest) doRawRequest(request *http.Request) (*HttpResponse, error) {
 	response, err := r.httpClient.raw.Do(request)
 	if err != nil {
@@ -166,7 +221,7 @@ func (r *HttpRequest) doRawRequest(request *http.Request) (*HttpResponse, error)
 	return &HttpResponse{response}, nil
 }
 
-func (r *HttpRequest) doRequest(method, url string, data []byte, query *HttpValues) (*HttpResponse, error) {
+func (r *HttpRequest) DoRequest(method, url string, data []byte, query *HttpValues) (*HttpResponse, error) {
 	fn := func() (interface{}, error) {
 		request, err := r.newRawRequest(method, url, data)
 		if err != nil {
@@ -175,11 +230,16 @@ func (r *HttpRequest) doRequest(method, url string, data []byte, query *HttpValu
 		if query != nil {
 			request.URL.RawQuery = query.Encode()
 		}
-		return r.doRawRequest(request)
+		if r.httpClient.cfg.disbaleTimeout == false && r.timeout > 0 {
+			ctx, _ := context.WithTimeout(context.Background(), r.timeout)
+			return r.doRawRequestWithTimeout(request, ctx)
+		} else {
+			return r.doRawRequest(request)
+		}
 	}
 
-	if r.httpClient.breaker != nil {
-		response, err := r.httpClient.breaker.Execute(fn)
+	if r.httpClient.cfg.breaker != nil {
+		response, err := r.httpClient.cfg.breaker.Execute(fn)
 		if err != nil {
 			return nil, err
 		}
@@ -194,23 +254,27 @@ func (r *HttpRequest) doRequest(method, url string, data []byte, query *HttpValu
 }
 
 func (r *HttpRequest) Post(url string, data []byte) (*HttpResponse, error) {
-	return r.doRequest("POST", url, data, nil)
+	return r.DoRequest("POST", url, data, nil)
 }
 
 func (r *HttpRequest) Put(url string, data []byte) (*HttpResponse, error) {
-	return r.doRequest("PUT", url, data, nil)
+	return r.DoRequest("PUT", url, data, nil)
+}
+
+func (r *HttpRequest) Patch(url string, data []byte) (*HttpResponse, error) {
+	return r.DoRequest("PATCH", url, data, nil)
 }
 
 func (r *HttpRequest) Get(url string) (*HttpResponse, error) {
-	return r.doRequest("GET", url, nil, nil)
+	return r.DoRequest("GET", url, nil, nil)
 }
 
 func (r *HttpRequest) Query(url string, query HttpValues) (*HttpResponse, error) {
-	return r.doRequest("GET", url, nil, &query)
+	return r.DoRequest("GET", url, nil, &query)
 }
 
 func (r *HttpRequest) Delete(url string) (*HttpResponse, error) {
-	return r.doRequest("DELETE", url, nil, nil)
+	return r.DoRequest("DELETE", url, nil, nil)
 }
 
 func (r *HttpRequest) PutJson(url string, data json.Map) (*HttpResponse, error) {
