@@ -3,6 +3,7 @@ package httpx
 import (
 	"compress/gzip"
 	"context"
+	j "encoding/json"
 	"errors"
 	"io"
 	"io/ioutil"
@@ -51,7 +52,7 @@ func (r *HttpResponse) readJson(out interface{}) error {
 	} else {
 		bodyReader = r.Body
 	}
-	if err := json.NewDecoder(bodyReader).Decode(out); err != nil {
+	if err := j.NewDecoder(bodyReader).Decode(out); err != nil {
 		return err
 	}
 	return nil
@@ -83,8 +84,8 @@ func (r *HttpResponse) ReadObject(o interface{}) error {
 }
 
 type HttpClientConfig struct {
-	breaker        HttpBreaker
-	disbaleTimeout bool
+	Breaker        HttpBreaker
+	DisbaleTimeout bool
 }
 
 type HttpClient struct {
@@ -230,7 +231,7 @@ func (r *HttpRequest) DoRequest(method, url string, data []byte, query *HttpValu
 		if query != nil {
 			request.URL.RawQuery = query.Encode()
 		}
-		if r.httpClient.cfg.disbaleTimeout == false && r.timeout > 0 {
+		if r.httpClient.cfg.DisbaleTimeout == false && r.timeout > 0 {
 			ctx, _ := context.WithTimeout(context.Background(), r.timeout)
 			return r.doRawRequestWithTimeout(request, ctx)
 		} else {
@@ -238,8 +239,8 @@ func (r *HttpRequest) DoRequest(method, url string, data []byte, query *HttpValu
 		}
 	}
 
-	if r.httpClient.cfg.breaker != nil {
-		done, err := r.httpClient.cfg.breaker.Allow()
+	if r.httpClient.cfg.Breaker != nil {
+		done, err := r.httpClient.cfg.Breaker.Allow()
 		if err != nil {
 			return nil, err
 		}
