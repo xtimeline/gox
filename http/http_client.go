@@ -3,7 +3,7 @@ package httpx
 import (
 	"compress/gzip"
 	"context"
-	j "encoding/json"
+	stdjson "encoding/json"
 	"errors"
 	"io"
 	"io/ioutil"
@@ -52,7 +52,9 @@ func (r *HttpResponse) readJson(out interface{}) error {
 	} else {
 		bodyReader = r.Body
 	}
-	if err := j.NewDecoder(bodyReader).Decode(out); err != nil {
+	decoder := stdjson.NewDecoder(bodyReader)
+	decoder.UseNumber()
+	if err := decoder.Decode(out); err != nil {
 		return err
 	}
 	return nil
