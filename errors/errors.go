@@ -12,7 +12,7 @@ const (
 
 func New(code int, message string, detail map[string]interface{}) error {
 	return E{
-		id:      time.Now().UnixNano(), // TODO: use snowflake?
+		id:      time.Now().Unix(), // TODO: use snowflake?
 		code:    code,
 		message: message,
 		detail:  detail,
