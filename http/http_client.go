@@ -1,18 +1,19 @@
 package httpx
 
 import (
-	"compress/gzip"
 	"context"
-	stdjson "encoding/json"
 	"errors"
 	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/ext"
 	"github.com/xtimeline/gox/json"
 )
 
@@ -20,83 +21,21 @@ var (
 	ErrRequestTimeOut = errors.New("request time out")
 )
 
-// https://github.com/sony/gobreaker
-type HttpBreaker interface {
-	Allow() (done func(success bool), err error)
-}
-
-type HttpValues struct {
-	url.Values
-}
-
-func NewValues() HttpValues {
-	v := HttpValues{
-		make(url.Values),
-	}
-	return v
-}
-
-type HttpResponse struct {
-	*http.Response
-}
-
-func (r *HttpResponse) readJson(out interface{}) error {
-	defer r.Body.Close()
-	var err error
-	var bodyReader io.Reader
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		bodyReader, err = gzip.NewReader(r.Body)
-		if err != nil {
-			return err
-		}
-	} else {
-		bodyReader = r.Body
-	}
-	decoder := stdjson.NewDecoder(bodyReader)
-	decoder.UseNumber()
-	if err := decoder.Decode(out); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *HttpResponse) ReadBytes() ([]byte, error) {
-	defer r.Body.Close()
-	data, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		return nil, err
-	}
-	return data, err
-}
-
-func (r *HttpResponse) ReadJsons() ([]json.Map, error) {
-	items := []json.Map{}
-	err := r.readJson(&items)
-	return items, err
-}
-
-func (r *HttpResponse) ReadJson() (json.Map, error) {
-	jsonMap := json.Map{}
-	err := r.readJson(&jsonMap)
-	return jsonMap, err
-}
-
-func (r *HttpResponse) ReadObject(o interface{}) error {
-	return r.readJson(o)
-}
-
-type HttpClientConfig struct {
-	Breaker        HttpBreaker
-	DisbaleTimeout bool
-}
-
-type HttpClient struct {
+type Client struct {
 	raw       *http.Client
 	transport *http.Transport
-	cfg       HttpClientConfig
 }
 
-func NewHttpClient(cfg HttpClientConfig) *HttpClient {
+type clientOptions struct {
+}
+
+type ClientOption func(opts *clientOptions)
+
+func NewClient(opts ...ClientOption) *Client {
+	cliOps := clientOptions{}
+	for _, opt := range opts {
+		opt(&cliOps)
+	}
 	dialer := &net.Dialer{
 		Timeout:   3 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -110,102 +49,142 @@ func NewHttpClient(cfg HttpClientConfig) *HttpClient {
 	client := &http.Client{
 		Transport: transport,
 	}
-	wrapper := &HttpClient{
+	wrapper := &Client{
 		raw:       client,
 		transport: transport,
-		cfg:       cfg,
 	}
 	return wrapper
 }
 
-func NewDefaultHttpClient() *HttpClient {
-	return NewHttpClient(HttpClientConfig{})
+type requestOptions struct {
+	body          []byte
+	query         url.Values
+	header        http.Header
+	cookies       []http.Cookie
+	breaker       HttpBreaker
+	ctx           context.Context
+	operationName string
+	customRequest *http.Request
 }
 
-func (c *HttpClient) NewRequest() *HttpRequest {
-	httpRequest := &HttpRequest{
-		httpClient: c,
-		httpHeader: make(http.Header),
-		timeout:    2 * time.Second,
+func newRequestOptions() requestOptions {
+	return requestOptions{
+		header:        make(http.Header),
+		query:         make(url.Values),
+		cookies:       make([]http.Cookie, 0, 1),
+		operationName: "http request",
 	}
-	return httpRequest
 }
 
-func (c *HttpClient) NewRequestWithoutTimeout() *HttpRequest {
-	httpRequest := &HttpRequest{
-		httpClient: c,
-		httpHeader: make(http.Header),
-		timeout:    0,
+type RequestOption func(opts *requestOptions)
+
+func OperationName(v string) RequestOption {
+	return func(opts *requestOptions) {
+		opts.operationName = v
 	}
-	return httpRequest
 }
 
-func (c *HttpClient) NewRequestWithTimeout(timeout time.Duration) *HttpRequest {
-	httpRequest := &HttpRequest{
-		httpClient: c,
-		httpHeader: make(http.Header),
-		timeout:    timeout,
+func Body(v []byte) RequestOption {
+	return func(opts *requestOptions) {
+		opts.body = v
 	}
-	return httpRequest
 }
 
-type HttpRequest struct {
-	httpClient *HttpClient
-	httpHeader http.Header
-	timeout    time.Duration
-}
-
-func (r *HttpRequest) AddHeader(key, value string) *HttpRequest {
-	r.httpHeader.Add(key, value)
-	return r
-}
-
-func (r *HttpRequest) SetHeader(key, value string) *HttpRequest {
-	r.httpHeader.Set(key, value)
-	return r
-}
-
-func (r *HttpRequest) GetHeader(key string) string {
-	return r.httpHeader.Get(key)
-}
-
-func (r *HttpRequest) DelHeader(key string) *HttpRequest {
-	r.httpHeader.Del(key)
-	return r
-}
-
-func (r *HttpRequest) newRawRequest(method string, url string, data []byte) (*http.Request, error) {
-	var bodyReader io.ReadCloser
-	if data != nil {
-		bodyReader = ioutil.NopCloser(strings.NewReader(string(data)))
+func QueryKV(key, val string) RequestOption {
+	return func(opts *requestOptions) {
+		opts.query.Add(key, val)
 	}
-	request, err := http.NewRequest(method, url, bodyReader)
+}
+
+func HeadKV(key, val string) RequestOption {
+	return func(opts *requestOptions) {
+		opts.header.Add(key, val)
+	}
+}
+
+func CookieKV(key, val string) RequestOption {
+	return func(opts *requestOptions) {
+		opts.cookies = append(opts.cookies, http.Cookie{Name: key, Value: val})
+	}
+}
+
+func Context(v context.Context) RequestOption {
+	return func(opts *requestOptions) {
+		opts.ctx = v
+	}
+}
+
+func Breaker(v HttpBreaker) RequestOption {
+	return func(opts *requestOptions) {
+		opts.breaker = v
+	}
+}
+
+func CustomRequest(v *http.Request) RequestOption {
+	return func(opts *requestOptions) {
+		opts.customRequest = v
+	}
+}
+
+func (cli *Client) Post(url string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, Body(body))
+	return cli.DoRequest("POST", url, opts...)
+}
+
+func (cli *Client) Put(url string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, Body(body))
+	return cli.DoRequest("PUT", url, opts...)
+}
+
+func (cli *Client) Patch(url string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, Body(body))
+	return cli.DoRequest("PATCH", url, opts...)
+}
+
+func (cli *Client) Get(url string, opts ...RequestOption) (*HttpResponse, error) {
+	return cli.DoRequest("GET", url, opts...)
+}
+
+func (cli *Client) Delete(url string, opts ...RequestOption) (*HttpResponse, error) {
+	return cli.DoRequest("DELETE", url, opts...)
+}
+
+func (cli *Client) PutJson(url string, data json.Map, opts ...RequestOption) (*HttpResponse, error) {
+	body, err := data.Marshal()
 	if err != nil {
 		return nil, err
 	}
-	length := int64(len(data))
-	if length != 0 {
-		request.ContentLength = length
-	}
-	for key, value := range r.httpHeader {
-		request.Header[key] = value
-	}
-	return request, nil
+	opts = append(opts, HeadKV("Content-Type", "application/json"))
+	return cli.Put(url, body, opts...)
 }
 
-func (r *HttpRequest) doRawRequestWithTimeout(request *http.Request, ctx context.Context) (*HttpResponse, error) {
+func (cli *Client) PostJson(url string, data json.Map, opts ...RequestOption) (*HttpResponse, error) {
+	body, err := data.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, HeadKV("Content-Type", "application/json"))
+	return cli.Post(url, body, opts...)
+}
+
+func (cli *Client) PostForm(url string, data url.Values, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, HeadKV("Content-Type", "application/json"))
+	return cli.Post(url, []byte(data.Encode()), opts...)
+}
+
+func (cli *Client) doRequest(request *http.Request, ctx context.Context) (*HttpResponse, error) {
 	type Pack struct {
 		response *http.Response
 		err      error
 	}
 	c := make(chan Pack, 1)
 	go func() {
-		response, err := r.httpClient.raw.Do(request)
+		response, err := cli.raw.Do(request)
 		c <- Pack{response: response, err: err}
 	}()
 	select {
 	case <-ctx.Done():
-		r.httpClient.transport.CancelRequest(request)
+		cli.transport.CancelRequest(request)
 		<-c
 		return nil, ErrRequestTimeOut
 	case result := <-c:
@@ -216,33 +195,89 @@ func (r *HttpRequest) doRawRequestWithTimeout(request *http.Request, ctx context
 	}
 }
 
-func (r *HttpRequest) doRawRequest(request *http.Request) (*HttpResponse, error) {
-	response, err := r.httpClient.raw.Do(request)
-	if err != nil {
-		return nil, err
+func (cli *Client) DoRequest(method, url string, opts ...RequestOption) (*HttpResponse, error) {
+	reqOps := newRequestOptions()
+	for _, opt := range opts {
+		opt(&reqOps)
 	}
-	return &HttpResponse{response}, nil
-}
 
-func (r *HttpRequest) DoRequest(method, url string, data []byte, query *HttpValues) (*HttpResponse, error) {
 	fn := func() (*HttpResponse, error) {
-		request, err := r.newRawRequest(method, url, data)
-		if err != nil {
-			return nil, err
+		var err error
+
+		//
+		// use custom request first
+		//
+		request := reqOps.customRequest
+
+		if request == nil {
+			//
+			// new request
+			//
+			var bodyReader io.ReadCloser
+			if reqOps.body != nil {
+				bodyReader = ioutil.NopCloser(strings.NewReader(string(reqOps.body)))
+			}
+
+			request, err = http.NewRequest(method, url, bodyReader)
+			if err != nil {
+				return nil, err
+			}
+
+			//
+			// config request
+			//
+			length := len(reqOps.body)
+			if length != 0 {
+				request.ContentLength = int64(length)
+			}
+
+			if len(reqOps.header) != 0 {
+				request.Header = reqOps.header
+			}
+
+			if len(reqOps.query) != 0 {
+				request.URL.RawQuery = reqOps.query.Encode()
+			}
+
+			for _, c := range reqOps.cookies {
+				request.AddCookie(&c)
+			}
+
+			if reqOps.ctx != nil {
+				request = request.WithContext(reqOps.ctx)
+			}
+
+			//
+			// tracing
+			//
+			{
+				tracer := opentracing.GlobalTracer()
+				span, ctx := opentracing.StartSpanFromContext(request.Context(), reqOps.operationName)
+				defer span.Finish()
+				request = request.WithContext(ctx)
+
+				host, port, err := net.SplitHostPort(request.URL.Host)
+				if err == nil {
+					ext.PeerHostname.Set(span, host)
+					if v, err := strconv.Atoi(port); err != nil {
+						ext.PeerPort.Set(span, uint16(v))
+					}
+				} else {
+					ext.PeerHostname.Set(span, request.URL.Host)
+				}
+				tracer.Inject(
+					span.Context(),
+					opentracing.HTTPHeaders,
+					opentracing.HTTPHeadersCarrier(request.Header),
+				)
+			}
 		}
-		if query != nil {
-			request.URL.RawQuery = query.Encode()
-		}
-		if r.httpClient.cfg.DisbaleTimeout == false && r.timeout > 0 {
-			ctx, _ := context.WithTimeout(context.Background(), r.timeout)
-			return r.doRawRequestWithTimeout(request, ctx)
-		} else {
-			return r.doRawRequest(request)
-		}
+
+		return cli.doRequest(request, reqOps.ctx)
 	}
 
-	if r.httpClient.cfg.Breaker != nil {
-		done, err := r.httpClient.cfg.Breaker.Allow()
+	if reqOps.breaker != nil {
+		done, err := reqOps.breaker.Allow()
 		if err != nil {
 			return nil, err
 		}
@@ -256,48 +291,4 @@ func (r *HttpRequest) DoRequest(method, url string, data []byte, query *HttpValu
 		return nil, err
 	}
 	return response, err
-}
-
-func (r *HttpRequest) Post(url string, data []byte) (*HttpResponse, error) {
-	return r.DoRequest("POST", url, data, nil)
-}
-
-func (r *HttpRequest) Put(url string, data []byte) (*HttpResponse, error) {
-	return r.DoRequest("PUT", url, data, nil)
-}
-
-func (r *HttpRequest) Patch(url string, data []byte) (*HttpResponse, error) {
-	return r.DoRequest("PATCH", url, data, nil)
-}
-
-func (r *HttpRequest) Get(url string) (*HttpResponse, error) {
-	return r.DoRequest("GET", url, nil, nil)
-}
-
-func (r *HttpRequest) Query(url string, query HttpValues) (*HttpResponse, error) {
-	return r.DoRequest("GET", url, nil, &query)
-}
-
-func (r *HttpRequest) Delete(url string) (*HttpResponse, error) {
-	return r.DoRequest("DELETE", url, nil, nil)
-}
-
-func (r *HttpRequest) PutJson(url string, data json.Map) (*HttpResponse, error) {
-	body, err := data.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	return r.SetHeader("Content-Type", "application/json").Put(url, body)
-}
-
-func (r *HttpRequest) PostJson(url string, data json.Map) (*HttpResponse, error) {
-	body, err := data.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	return r.SetHeader("Content-Type", "application/json").Post(url, body)
-}
-
-func (r *HttpRequest) PostForm(url string, data HttpValues) (*HttpResponse, error) {
-	return r.SetHeader("Content-Type", "application/x-www-form-urlencoded; param=value").Post(url, []byte(data.Encode()))
 }
