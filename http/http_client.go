@@ -1,19 +1,15 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/opentracing/opentracing-go"
-	"github.com/opentracing/opentracing-go/ext"
 	"github.com/xtimeline/gox/json"
 )
 
@@ -57,72 +53,70 @@ func NewClient(opts ...ClientOption) *Client {
 }
 
 type requestOptions struct {
-	body          []byte
-	query         url.Values
-	header        http.Header
-	cookies       []http.Cookie
-	breaker       HttpBreaker
-	ctx           context.Context
-	operationName string
-	customRequest *http.Request
+	query   url.Values
+	breaker HttpBreaker
+	request *http.Request
 }
 
-func newRequestOptions() requestOptions {
+func newRequestOptions(request *http.Request) requestOptions {
 	return requestOptions{
-		header:        make(http.Header),
-		query:         make(url.Values),
-		cookies:       make([]http.Cookie, 0, 1),
-		operationName: "http request",
+		query:   make(url.Values),
+		request: request,
 	}
 }
 
-type RequestOption func(opts *requestOptions)
-
-func OperationName(v string) RequestOption {
-	return func(opts *requestOptions) {
-		opts.operationName = v
-	}
-}
+type RequestOption func(opts *requestOptions) error
 
 func Body(v []byte) RequestOption {
-	return func(opts *requestOptions) {
-		opts.body = v
+	return func(opts *requestOptions) error {
+		if v != nil {
+			opts.request.Body = ioutil.NopCloser(bytes.NewBuffer(v))
+			opts.request.ContentLength = int64(len(v))
+		}
+		return nil
 	}
 }
 
 func QueryKV(key, val string) RequestOption {
-	return func(opts *requestOptions) {
+	return func(opts *requestOptions) error {
 		opts.query.Add(key, val)
+		return nil
 	}
 }
 
 func HeadKV(key, val string) RequestOption {
-	return func(opts *requestOptions) {
-		opts.header.Add(key, val)
+	return func(opts *requestOptions) error {
+		opts.request.Header.Add(key, val)
+		return nil
 	}
 }
 
 func CookieKV(key, val string) RequestOption {
-	return func(opts *requestOptions) {
-		opts.cookies = append(opts.cookies, http.Cookie{Name: key, Value: val})
+	return func(opts *requestOptions) error {
+		opts.request.AddCookie(&http.Cookie{Name: key, Value: val})
+		return nil
 	}
 }
 
 func Context(v context.Context) RequestOption {
-	return func(opts *requestOptions) {
-		opts.ctx = v
+	return func(opts *requestOptions) error {
+		if v != nil {
+			opts.request = opts.request.WithContext(v)
+		}
+		return nil
 	}
 }
 
 func Breaker(v HttpBreaker) RequestOption {
-	return func(opts *requestOptions) {
+	return func(opts *requestOptions) error {
 		opts.breaker = v
+		return nil
 	}
 }
 
-func CustomRequest(v *http.Request) RequestOption {
-	return func(opts *requestOptions) {
-		opts.customRequest = v
+func CustomRequest(v func(*http.Request) error) RequestOption {
+	return func(opts *requestOptions) error {
+		return v(opts.request)
 	}
 }
 
@@ -167,12 +161,31 @@ func (cli *Client) PostJson(url string, data json.Map, opts ...RequestOption) (*
 	return cli.Post(url, body, opts...)
 }
 
-func (cli *Client) PostForm(url string, data url.Values, opts ...RequestOption) (*HttpResponse, error) {
+func (cli *Client) PatchJson(url string, data json.Map, opts ...RequestOption) (*HttpResponse, error) {
+	body, err := data.Marshal()
+	if err != nil {
+		return nil, err
+	}
 	opts = append(opts, HeadKV("Content-Type", "application/json"))
+	return cli.Patch(url, body, opts...)
+}
+
+func (cli *Client) PutForm(url string, data url.Values, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, HeadKV("Content-Type", "application/x-www-form-urlencoded; param=value"))
+	return cli.Put(url, []byte(data.Encode()), opts...)
+}
+
+func (cli *Client) PostForm(url string, data url.Values, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, HeadKV("Content-Type", "application/x-www-form-urlencoded; param=value"))
 	return cli.Post(url, []byte(data.Encode()), opts...)
 }
 
-func (cli *Client) doRequest(request *http.Request, ctx context.Context) (*HttpResponse, error) {
+func (cli *Client) PatchForm(url string, data url.Values, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, HeadKV("Content-Type", "application/x-www-form-urlencoded; param=value"))
+	return cli.Patch(url, []byte(data.Encode()), opts...)
+}
+
+func (cli *Client) sendRequest(request *http.Request, ctx context.Context) (*HttpResponse, error) {
 	type Pack struct {
 		response *http.Response
 		err      error
@@ -196,84 +209,38 @@ func (cli *Client) doRequest(request *http.Request, ctx context.Context) (*HttpR
 }
 
 func (cli *Client) DoRequest(method, url string, opts ...RequestOption) (*HttpResponse, error) {
-	reqOps := newRequestOptions()
+
+	//
+	// new request
+	//
+	request, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	//
+	// config request
+	//
+	reqOps := newRequestOptions(request)
 	for _, opt := range opts {
-		opt(&reqOps)
+		err = opt(&reqOps)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	fn := func() (*HttpResponse, error) {
-		var err error
-
 		//
-		// use custom request first
+		// encodes query params
 		//
-		request := reqOps.customRequest
-
-		if request == nil {
-			//
-			// new request
-			//
-			var bodyReader io.ReadCloser
-			if reqOps.body != nil {
-				bodyReader = ioutil.NopCloser(strings.NewReader(string(reqOps.body)))
-			}
-
-			request, err = http.NewRequest(method, url, bodyReader)
-			if err != nil {
-				return nil, err
-			}
-
-			//
-			// config request
-			//
-			length := len(reqOps.body)
-			if length != 0 {
-				request.ContentLength = int64(length)
-			}
-
-			if len(reqOps.header) != 0 {
-				request.Header = reqOps.header
-			}
-
-			if len(reqOps.query) != 0 {
-				request.URL.RawQuery = reqOps.query.Encode()
-			}
-
-			for _, c := range reqOps.cookies {
-				request.AddCookie(&c)
-			}
-
-			if reqOps.ctx != nil {
-				request = request.WithContext(reqOps.ctx)
-			}
-
-			//
-			// tracing
-			//
-			{
-				tracer := opentracing.GlobalTracer()
-				span, ctx := opentracing.StartSpanFromContext(request.Context(), reqOps.operationName)
-				defer span.Finish()
-				request = request.WithContext(ctx)
-
-				host, port, err := net.SplitHostPort(request.URL.Host)
-				if err == nil {
-					ext.PeerHostname.Set(span, host)
-					if v, err := strconv.Atoi(port); err != nil {
-						ext.PeerPort.Set(span, uint16(v))
-					}
-				} else {
-					ext.PeerHostname.Set(span, request.URL.Host)
-				}
-				tracer.Inject(
-					span.Context(),
-					opentracing.HTTPHeaders,
-					opentracing.HTTPHeadersCarrier(request.Header),
-				)
-			}
+		if len(reqOps.query) != 0 {
+			request.URL.RawQuery = reqOps.query.Encode()
 		}
 
-		return cli.doRequest(request, reqOps.ctx)
+		//
+		// request config done and sent it
+		//
+		return cli.sendRequest(request, request.Context())
 	}
 
 	if reqOps.breaker != nil {
