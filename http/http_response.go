@@ -14,17 +14,18 @@ type HttpResponse struct {
 	*http.Response
 }
 
+func (r *HttpResponse) decodeBody() (io.Reader, error) {
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		return gzip.NewReader(r.Body)
+	}
+	return r.Body, nil
+}
+
 func (r *HttpResponse) readJson(out interface{}) error {
 	defer r.Body.Close()
-	var err error
-	var bodyReader io.Reader
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		bodyReader, err = gzip.NewReader(r.Body)
-		if err != nil {
-			return err
-		}
-	} else {
-		bodyReader = r.Body
+	bodyReader, err := r.decodeBody()
+	if err != nil {
+		return err
 	}
 	decoder := stdjson.NewDecoder(bodyReader)
 	decoder.UseNumber()
@@ -36,7 +37,11 @@ func (r *HttpResponse) readJson(out interface{}) error {
 
 func (r *HttpResponse) ReadBytes() ([]byte, error) {
 	defer r.Body.Close()
-	data, err := ioutil.ReadAll(r.Body)
+	bodyReader, err := r.decodeBody()
+	if err != nil {
+		return nil, err
+	}
+	data, err := ioutil.ReadAll(bodyReader)
 	if err != nil {
 		return nil, err
 	}
