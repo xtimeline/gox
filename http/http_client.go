@@ -114,12 +114,6 @@ func Breaker(v HttpBreaker) RequestOption {
 	}
 }
 
-func CustomRequest(v func(*http.Request) error) RequestOption {
-	return func(opts *requestOptions) error {
-		return v(opts.request)
-	}
-}
-
 func (cli *Client) Post(url string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
 	opts = append(opts, Body(body))
 	return cli.DoRequest("POST", url, opts...)
@@ -208,22 +202,13 @@ func (cli *Client) sendRequest(request *http.Request, ctx context.Context) (*Htt
 	}
 }
 
-func (cli *Client) DoRequest(method, url string, opts ...RequestOption) (*HttpResponse, error) {
-
-	//
-	// new request
-	//
-	request, err := http.NewRequest(method, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
+func (cli *Client) Do(request *http.Request, opts ...RequestOption) (*HttpResponse, error) {
 	//
 	// config request
 	//
 	reqOps := newRequestOptions(request)
 	for _, opt := range opts {
-		err = opt(&reqOps)
+		err := opt(&reqOps)
 		if err != nil {
 			return nil, err
 		}
@@ -258,4 +243,16 @@ func (cli *Client) DoRequest(method, url string, opts ...RequestOption) (*HttpRe
 		return nil, err
 	}
 	return response, err
+}
+
+func (cli *Client) DoRequest(method, url string, opts ...RequestOption) (*HttpResponse, error) {
+	//
+	// new request
+	//
+	request, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return cli.Do(request, opts...)
 }
