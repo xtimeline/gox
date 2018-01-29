@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"time"
 
@@ -53,9 +54,10 @@ func NewClient(opts ...ClientOption) *Client {
 }
 
 type requestOptions struct {
-	query   url.Values
-	breaker HttpBreaker
-	request *http.Request
+	query       url.Values
+	breaker     HttpBreaker
+	request     *http.Request
+	testHandler http.Handler
 }
 
 func newRequestOptions(request *http.Request) requestOptions {
@@ -110,6 +112,13 @@ func Context(v context.Context) RequestOption {
 func Breaker(v HttpBreaker) RequestOption {
 	return func(opts *requestOptions) error {
 		opts.breaker = v
+		return nil
+	}
+}
+
+func TestHandler(v http.Handler) RequestOption {
+	return func(opts *requestOptions) error {
+		opts.testHandler = v
 		return nil
 	}
 }
@@ -179,15 +188,21 @@ func (cli *Client) PatchForm(url string, data url.Values, opts ...RequestOption)
 	return cli.Patch(url, []byte(data.Encode()), opts...)
 }
 
-func (cli *Client) sendRequest(request *http.Request, ctx context.Context) (*HttpResponse, error) {
+func (cli *Client) sendRequest(request *http.Request, ctx context.Context, testHandler http.Handler) (*HttpResponse, error) {
 	type Pack struct {
 		response *http.Response
 		err      error
 	}
 	c := make(chan Pack, 1)
 	go func() {
-		response, err := cli.raw.Do(request)
-		c <- Pack{response: response, err: err}
+		if testHandler == nil {
+			response, err := cli.raw.Do(request)
+			c <- Pack{response: response, err: err}
+		} else {
+			recorder := httptest.NewRecorder()
+			testHandler.ServeHTTP(recorder, request)
+			c <- Pack{response: recorder.Result(), err: nil}
+		}
 	}()
 	select {
 	case <-ctx.Done():
@@ -225,7 +240,7 @@ func (cli *Client) Do(request *http.Request, opts ...RequestOption) (*HttpRespon
 		//
 		// request config done and sent it
 		//
-		return cli.sendRequest(request, request.Context())
+		return cli.sendRequest(request, request.Context(), reqOps.testHandler)
 	}
 
 	if reqOps.breaker != nil {
