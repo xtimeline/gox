@@ -1,6 +1,7 @@
 package json
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"reflect"
@@ -10,14 +11,6 @@ import (
 )
 
 type unixTime struct{}
-
-func (x unixTime) WriteExt(interface{}) []byte {
-	panic("unsupported")
-}
-
-func (x unixTime) ReadExt(interface{}, []byte) {
-	panic("unsupported")
-}
 
 func (x unixTime) ConvertExt(v interface{}) interface{} {
 	switch v2 := v.(type) {
@@ -47,7 +40,7 @@ var jsonHandler *codec.JsonHandle
 func init() {
 	jsonHandler = new(codec.JsonHandle)
 	timeType := reflect.TypeOf(time.Time{})
-	jsonHandler.SetExt(timeType, 1, unixTime{})
+	jsonHandler.SetInterfaceExt(timeType, 1, unixTime{})
 }
 
 func NewEncoder(w io.Writer) *codec.Encoder {
@@ -56,4 +49,12 @@ func NewEncoder(w io.Writer) *codec.Encoder {
 
 func NewDecoder(r io.Reader) *codec.Decoder {
 	return codec.NewDecoder(r, jsonHandler)
+}
+
+func Marshal(v interface{}) ([]byte, error) {
+	return json.Marshal(v)
+}
+
+func Unmarshal(data []byte, v interface{}) error {
+	return json.Unmarshal(data, v)
 }

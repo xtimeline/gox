@@ -3,7 +3,7 @@ package l
 import (
 	"io"
 
-	e "github.com/xtimeline/gox/errors"
+	"github.com/xtimeline/gox/errors"
 )
 
 var (

@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	logrus "github.com/Sirupsen/logrus"
-	e "github.com/xtimeline/gox/errors"
+	"github.com/xtimeline/gox/errors"
 )
 
 type Logger struct {

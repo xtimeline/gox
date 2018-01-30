@@ -147,7 +147,7 @@ func (cli *Client) Delete(url string, opts ...RequestOption) (*HttpResponse, err
 }
 
 func (cli *Client) PutJson(url string, data json.Map, opts ...RequestOption) (*HttpResponse, error) {
-	body, err := data.Marshal()
+	body, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +156,7 @@ func (cli *Client) PutJson(url string, data json.Map, opts ...RequestOption) (*H
 }
 
 func (cli *Client) PostJson(url string, data json.Map, opts ...RequestOption) (*HttpResponse, error) {
-	body, err := data.Marshal()
+	body, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +165,7 @@ func (cli *Client) PostJson(url string, data json.Map, opts ...RequestOption) (*
 }
 
 func (cli *Client) PatchJson(url string, data json.Map, opts ...RequestOption) (*HttpResponse, error) {
-	body, err := data.Marshal()
+	body, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
 	}
