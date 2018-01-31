@@ -10,8 +10,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"time"
-
-	"github.com/xtimeline/gox/json"
 )
 
 var (
@@ -123,18 +121,18 @@ func TestHandler(v http.Handler) RequestOption {
 	}
 }
 
-func (cli *Client) Post(url string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
-	opts = append(opts, Body(body))
+func (cli *Client) Post(url, contentType string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, HeadKV("Content-Type", contentType), Body(body))
 	return cli.DoRequest("POST", url, opts...)
 }
 
-func (cli *Client) Put(url string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
-	opts = append(opts, Body(body))
+func (cli *Client) Put(url, contentType string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, HeadKV("Content-Type", contentType), Body(body))
 	return cli.DoRequest("PUT", url, opts...)
 }
 
-func (cli *Client) Patch(url string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
-	opts = append(opts, Body(body))
+func (cli *Client) Patch(url, contentType string, body []byte, opts ...RequestOption) (*HttpResponse, error) {
+	opts = append(opts, HeadKV("Content-Type", contentType), Body(body))
 	return cli.DoRequest("PATCH", url, opts...)
 }
 
@@ -146,46 +144,16 @@ func (cli *Client) Delete(url string, opts ...RequestOption) (*HttpResponse, err
 	return cli.DoRequest("DELETE", url, opts...)
 }
 
-func (cli *Client) PutJson(url string, data json.Map, opts ...RequestOption) (*HttpResponse, error) {
-	body, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-	opts = append(opts, HeadKV("Content-Type", "application/json"))
-	return cli.Put(url, body, opts...)
-}
-
-func (cli *Client) PostJson(url string, data json.Map, opts ...RequestOption) (*HttpResponse, error) {
-	body, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-	opts = append(opts, HeadKV("Content-Type", "application/json"))
-	return cli.Post(url, body, opts...)
-}
-
-func (cli *Client) PatchJson(url string, data json.Map, opts ...RequestOption) (*HttpResponse, error) {
-	body, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-	opts = append(opts, HeadKV("Content-Type", "application/json"))
-	return cli.Patch(url, body, opts...)
-}
-
 func (cli *Client) PutForm(url string, data url.Values, opts ...RequestOption) (*HttpResponse, error) {
-	opts = append(opts, HeadKV("Content-Type", "application/x-www-form-urlencoded; param=value"))
-	return cli.Put(url, []byte(data.Encode()), opts...)
+	return cli.Put(url, "application/x-www-form-urlencoded; param=value", []byte(data.Encode()), opts...)
 }
 
 func (cli *Client) PostForm(url string, data url.Values, opts ...RequestOption) (*HttpResponse, error) {
-	opts = append(opts, HeadKV("Content-Type", "application/x-www-form-urlencoded; param=value"))
-	return cli.Post(url, []byte(data.Encode()), opts...)
+	return cli.Post(url, "application/x-www-form-urlencoded; param=value", []byte(data.Encode()), opts...)
 }
 
 func (cli *Client) PatchForm(url string, data url.Values, opts ...RequestOption) (*HttpResponse, error) {
-	opts = append(opts, HeadKV("Content-Type", "application/x-www-form-urlencoded; param=value"))
-	return cli.Patch(url, []byte(data.Encode()), opts...)
+	return cli.Patch(url, "application/x-www-form-urlencoded; param=value", []byte(data.Encode()), opts...)
 }
 
 func (cli *Client) sendRequest(request *http.Request, ctx context.Context, testHandler http.Handler) (*HttpResponse, error) {
